@@ -9,10 +9,13 @@ set -e
 echo "[entrypoint] rendering nginx config for port ${PORT}"
 envsubst '${PORT}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
-# Render supplies a single DATABASE_URL; Laravel reads it directly, but the
-# component parts are clearer in logs and let the app run unchanged elsewhere.
-if [ -n "${DATABASE_URL}" ]; then
-    echo "[entrypoint] using DATABASE_URL"
+# The database is external and reached through DB_URL, which Laravel's config
+# reads directly. Fail loudly if it is absent: without it the app would quietly
+# fall back to 127.0.0.1 and report a connection error that looks like a network
+# fault rather than a missing setting.
+if [ -z "${DB_URL}" ] && [ -z "${DB_HOST}" ]; then
+    echo "[entrypoint] FATAL: neither DB_URL nor DB_HOST is set" >&2
+    exit 1
 fi
 
 echo "[entrypoint] waiting for the database"

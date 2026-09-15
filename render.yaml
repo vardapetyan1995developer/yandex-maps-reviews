@@ -3,11 +3,17 @@
 #
 # Apply it with: Render dashboard -> New -> Blueprint -> pick this repository.
 
-databases:
-  - name: yandex-maps-reviews-db
-    databaseName: yandex_reviews
-    user: yandex_reviews
-    plan: free
+# No `databases:` block on purpose.
+#
+# Render allows a single free-tier database per account, so declaring one here
+# fails outright on any account that already has one — and takes the web service
+# down with it, since the blueprint applies atomically. The database is therefore
+# supplied externally through DB_URL, which also sidesteps the expiry Render
+# applies to free instances.
+#
+# Any managed PostgreSQL works. Neon (neon.tech) has a free tier that does not
+# expire and wakes in well under a second, which suits a service that sleeps
+# when idle.
 
 services:
   - type: web
@@ -39,13 +45,23 @@ services:
       - key: LOG_CHANNEL
         value: stderr
 
-      # Database credentials come from the managed instance above
+      # Connection string for an external PostgreSQL instance.
+      #
+      # The variable is DB_URL, not DATABASE_URL: Laravel's database config
+      # reads `env('DB_URL')`, so a differently named variable is silently
+      # ignored and the app falls back to 127.0.0.1 — a failure that looks like
+      # a network problem rather than a configuration one.
+      #
+      # sync: false means Render prompts for the value instead of taking it from
+      # this file, which keeps the credentials out of the repository.
       - key: DB_CONNECTION
         value: pgsql
-      - key: DATABASE_URL
-        fromDatabase:
-          name: yandex-maps-reviews-db
-          property: connectionString
+      - key: DB_URL
+        sync: false
+      # Managed providers require TLS; the Laravel default of `prefer` would
+      # silently accept an unencrypted connection where one was offered
+      - key: DB_SSLMODE
+        value: require
 
       # The queue runs inside this same container (see supervisord.conf), so it
       # needs a driver both processes can see. The database is the only shared
