@@ -70,6 +70,7 @@ cp .env.example .env
 #   DB_PASSWORD=secret
 
 docker compose up -d --build
+
 docker compose exec app composer install
 docker compose exec app php artisan key:generate
 docker compose exec app php artisan migrate --seed
@@ -79,8 +80,35 @@ docker compose exec app npm run build
 
 The application is then available at <http://localhost:8000>.
 
-The queue worker runs as its own `queue` service and starts automatically. To
-scale it: `docker compose up -d --scale queue=4`.
+Dependencies are installed after the containers start rather than baked into
+the image, because the project directory is bind-mounted over `/var/www` — a
+`composer install` performed during the build would be hidden by the mount. The
+consequence is that the application is not usable between `up` and the end of
+that command list: PHP has no autoloader yet and the web root returns a fatal
+error. This is expected on a first launch and resolves once the steps above
+finish.
+
+The `queue` service handles this explicitly: instead of crash-looping while the
+application is incomplete, it polls `migrate:status` and starts the worker only
+once dependencies, the app key, the database connection and the schema are all
+in place. `docker compose logs queue` shows `application ready, starting worker`
+at that point. To scale workers: `docker compose up -d --scale queue=4`.
+
+MySQL and Redis are published on host ports **13306** and **16379** rather than
+the conventional ones. The application reaches them over the compose network;
+the forwards exist only so a GUI client can connect from the host, and unusual
+numbers keep a MySQL or Redis already running on the machine from making
+`docker compose up` fail outright. Override with `DB_FORWARD_PORT` and
+`REDIS_FORWARD_PORT`.
+
+> **macOS note.** Docker Desktop only shares `/Users`, `/Volumes`, `/private`
+> and `/tmp` by default. Cloning the project somewhere outside those paths — for
+> example under `/Applications` — makes the bind mount fail with
+> `mounts denied`. Either clone into your home directory or add the location
+> under Docker Desktop → Settings → Resources → File Sharing.
+
+Requires PHP **8.4** (the lock resolves Symfony 8.x, which will not install on
+8.3) and Node 20+. The Docker image already provides both.
 
 ### Option 2 — MAMP
 

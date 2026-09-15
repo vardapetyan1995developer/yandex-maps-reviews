@@ -1,4 +1,4 @@
-FROM php:8.3-fpm-alpine
+FROM php:8.4-fpm-alpine
 
 # intl is needed for correct comparison and collation of Cyrillic strings,
 # pdo_mysql for the main database, bcmath is a dependency of some Laravel packages
