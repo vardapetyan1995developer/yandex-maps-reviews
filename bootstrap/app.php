@@ -17,6 +17,19 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Trust the platform's load balancer.
+        //
+        // Render (like most managed hosts) terminates TLS at the edge and
+        // forwards the request over plain HTTP, marking the original scheme in
+        // X-Forwarded-Proto. Laravel ignores that header unless the proxy is
+        // trusted, so it considers the request insecure and generates http://
+        // asset URLs on an https:// page. The browser then blocks them as mixed
+        // content and the SPA never boots — a blank page with a 200 status.
+        //
+        // The wildcard is appropriate here because the container is reachable
+        // only through that proxy; it is not exposed directly.
+        $middleware->trustProxies(at: '*');
+
         // Sanctum in SPA mode: requests from the trusted frontend authenticate
         // with a session cookie rather than a header token. An HttpOnly cookie
         // cannot be read by injected script, unlike a token in localStorage.

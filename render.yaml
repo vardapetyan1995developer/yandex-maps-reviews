@@ -40,6 +40,11 @@ services:
       - key: APP_KEY
         sync: false
 
+      # Used for URLs generated outside a request (queued jobs, console
+      # commands), where there is no incoming scheme to infer from
+      - key: APP_URL
+        value: https://yandex-maps-reviews.onrender.com
+
       - key: APP_NAME
         value: Yandex Reviews
       - key: APP_ENV
