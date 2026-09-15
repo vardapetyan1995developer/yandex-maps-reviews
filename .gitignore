@@ -1,0 +1,80 @@
+# --- Dependencies ----------------------------------------------------------
+/vendor
+/node_modules
+/auth.json
+
+# --- Frontend build --------------------------------------------------------
+/public/build
+/public/hot
+/public/storage
+/public/fonts-manifest.dev.json
+
+# --- Environment and secrets -----------------------------------------------
+# .env holds database credentials, the application key and the proxy list.
+# It must never reach the repository; .env.example is the template.
+.env
+.env.*
+!.env.example
+/storage/*.key
+/storage/pail
+
+# --- Data and logs ---------------------------------------------------------
+*.log
+/storage/framework/cache/data/*
+/storage/framework/sessions/*
+/storage/framework/testing/*
+/storage/framework/views/*
+/storage/logs/*
+/storage/app/private/*
+/storage/app/public/*
+!/storage/**/.gitignore
+
+# Local SQLite database (used only by tests and for a quick start)
+*.sqlite
+*.sqlite-journal
+/database/*.sqlite
+
+# --- Tooling caches --------------------------------------------------------
+/.phpunit.cache
+.phpunit.result.cache
+.php-cs-fixer.cache
+/.pint.cache
+_ide_helper.php
+_ide_helper_models.php
+.phpstorm.meta.php
+.phpactor.json
+
+# --- Headless browser ------------------------------------------------------
+# Playwright downloads browsers into a separate directory — hundreds of
+# megabytes, restored with `npx playwright install chromium`
+/.playwright
+/ms-playwright
+
+# --- Editors and IDEs ------------------------------------------------------
+/.idea
+/.vscode
+/.zed
+/.nova
+/.fleet
+/.cursor
+/.codex
+/.claude
+/.aider*
+*.swp
+*.swo
+
+# --- Operating system ------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# --- Miscellaneous ---------------------------------------------------------
+Homestead.json
+Homestead.yaml
+/.vagrant
+npm-debug.log*
+yarn-error.log*
