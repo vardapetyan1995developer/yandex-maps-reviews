@@ -864,7 +864,7 @@ Fully implemented in `OrganizationSyncService`.
 php artisan test
 ```
 
-**83 tests, 196 assertions.** No test touches the network.
+**113 tests, 260 assertions.** No test touches the network.
 
 | Suite | Coverage |
 |---|---|
@@ -877,10 +877,27 @@ php artisan test
 | `OrganizationSyncTest` | Idempotency, revisions, snapshots, truncated-run safety |
 | `ReviewRepositoryTest` | Visibility rules, stable ordering, per-organization isolation |
 | `ParseRunRepositoryTest` | Pending-run reuse, so a dropped duplicate dispatch cannot orphan a run |
+| `YandexMapsSourceTest` | The fallback policy: the browser is engaged on a contract change and on nothing else |
+| `SourceRegistryTest` | Link-to-platform resolution, and that the container wiring produces a usable source |
+| `ProxyPoolTest` | A blocked address leaves rotation and comes back only when cleared |
+| `ReviewQueryTest` | Clamping of page size and page number, and that every sort ends with a unique column |
 
-Two of these encode findings that would otherwise be easy to regress: the
-signing vectors, and the assertion that pages never overlap when every review
-shares a timestamp — the case where ordering without a secondary key drifts.
+Several encode findings that would otherwise be easy to regress: the signing
+vectors; the assertion that pages never overlap when every review shares a
+timestamp; and the fallback policy, which is a judgement call rather than a
+mechanism — the browser is engaged when the fast path's contract has changed and
+never because the source is merely blocked or unreachable, since a different
+strategy from the same address changes nothing there.
+
+Validation lives in form requests rather than in controllers — `LoginRequest`,
+`StoreOrganizationRequest` and `IndexReviewsRequest` — with the link check
+extracted further into a `SupportedSourceUrl` rule that consults the source
+registry. The listing request hands the repository a typed `ReviewQuery` rather
+than a raw array.
+
+What is deliberately not covered: the strategies' HTTP layer, which would need
+recorded fixtures, and the headless browser, which would need a browser in CI.
+Both are exercised by hand against live cards and noted below.
 
 ---
 

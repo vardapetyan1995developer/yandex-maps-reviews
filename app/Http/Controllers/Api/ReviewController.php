@@ -6,13 +6,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Contracts\Repositories\OrganizationRepository;
 use App\Contracts\Repositories\ReviewRepository;
-use App\Data\ReviewQuery;
-use App\Enums\ReviewSort;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\IndexReviewsRequest;
 use App\Http\Resources\ReviewResource;
 use App\Models\Organization;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 
 /**
  * Paginated review listing.
@@ -31,21 +29,14 @@ final class ReviewController extends Controller
         private readonly ReviewRepository $reviews,
     ) {}
 
-    public function index(Request $request, int $organization): JsonResponse
+    public function index(IndexReviewsRequest $request, int $organization): JsonResponse
     {
         $card = $this->organizations->findForUser($organization, $request->user());
 
         // 404 rather than 403: a 403 would confirm someone else's record exists
         abort_unless($card instanceof Organization, 404);
 
-        $validated = $request->validate([
-            'page' => ['sometimes', 'integer', 'min:1'],
-            'per_page' => ['sometimes', 'integer', 'min:1', 'max:'.ReviewQuery::MAX_PER_PAGE],
-            'sort' => ['sometimes', 'string', 'in:'.implode(',', ReviewSort::values())],
-            'rating' => ['sometimes', 'integer', 'min:1', 'max:5'],
-        ]);
-
-        $reviews = $this->reviews->paginateVisible($card, ReviewQuery::fromArray($validated));
+        $reviews = $this->reviews->paginateVisible($card, $request->toQuery());
 
         return response()->json([
             'data' => ReviewResource::collection($reviews->items()),
