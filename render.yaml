@@ -27,10 +27,18 @@ services:
     autoDeploy: true
 
     envVars:
-      # Generated once by Render and kept across deploys. Without a stable key
-      # every restart would invalidate existing sessions.
+      # Laravel requires a very specific shape here: the literal prefix
+      # "base64:" followed by exactly 32 base64-encoded bytes. Render's
+      # generateValue produces a random alphanumeric string, which passes
+      # silently through deployment and then fails at the first encrypted
+      # cookie with "Unsupported cipher or incorrect key length" — a message
+      # that points at the cipher rather than at the key that is actually wrong.
+      #
+      # So it is prompted for instead. Generate one with `php artisan key:generate
+      # --show` and paste it in; keep it stable, because rotating the key
+      # invalidates every existing session and encrypted value.
       - key: APP_KEY
-        generateValue: true
+        sync: false
 
       - key: APP_NAME
         value: Yandex Reviews
