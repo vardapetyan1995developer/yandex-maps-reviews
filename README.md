@@ -8,6 +8,13 @@ Yandex provides no public API for reviews, so every figure on screen is obtained
 by parsing. That parser — and its behaviour when the source changes, blocks us
 or runs out of data — is the substance of this project.
 
+**Live demo:** _(URL added once the Render blueprint is applied)_
+· sign in with `demo@example.com` / `password`
+
+> The demo runs on a free plan and sleeps after ~15 minutes of inactivity, so
+> the first request may take 30–60 seconds to wake it. See
+> [Deployment](#deployment).
+
 ---
 
 ## Contents
@@ -21,6 +28,7 @@ or runs out of data — is the substance of this project.
   - [Measured limits of the source](#measured-limits-of-the-source)
   - [Choosing an approach](#choosing-an-approach)
   - [Why results are cached](#why-results-are-cached)
+- [Deployment](#deployment)
 - [Architecture](#architecture)
 - [Database design](#database-design)
 - [API reference](#api-reference)
@@ -108,7 +116,11 @@ numbers keep a MySQL or Redis already running on the machine from making
 > under Docker Desktop → Settings → Resources → File Sharing.
 
 Requires PHP **8.4** (the lock resolves Symfony 8.x, which will not install on
-8.3) and Node 20+. The Docker image already provides both.
+8.3) and Node 20+. Both Docker images already provide them.
+
+MySQL and PostgreSQL are both supported and both were exercised with a full
+parse — MySQL locally, PostgreSQL in the production image. Nothing in the
+migrations or the repositories is engine-specific.
 
 ### Option 2 — MAMP
 
@@ -342,6 +354,103 @@ calls to an external source per click**. That is seconds of latency in the
 interface and a rate-limit block within the first minutes of use. It would also
 make the remaining requirements impossible: there would be nothing to run in the
 background and no baseline against which to compute a change history.
+
+---
+
+## Deployment
+
+The live instance runs on Render's free plan. Everything it needs is committed:
+`render.yaml` describes the service and the database, and
+`docker/production/Dockerfile` builds the image.
+
+### How the production image differs from the development one
+
+They are deliberately different artefacts, and the differences are forced by the
+platform rather than chosen for their own sake.
+
+| | Development (`docker-compose.yml`) | Production (`docker/production/`) |
+|---|---|---|
+| Source code | Bind-mounted, edits appear immediately | Copied into the image, immutable |
+| Dependencies | Installed after `up`, into the mount | Installed at build time, in separate stages |
+| Frontend bundle | Built by hand with `npm run build` | Built in a Node stage and copied in |
+| Web server | Its own nginx container | nginx inside the app container |
+| Queue worker | Its own `queue` service | Same container, run by supervisor |
+| Database | MySQL container | Render's managed PostgreSQL |
+| OPcache timestamps | Validated, so edits take effect | Disabled — code cannot change in an image |
+
+Two of those deserve an explanation rather than a table row.
+
+**The queue worker shares the container.** Splitting the web tier from the
+worker is the better arrangement, which is why the development compose file does
+exactly that. Render's free plan has no background workers, so here supervisor
+runs php-fpm, nginx and `queue:work` side by side. The trade-off is real: the
+processes compete for the same 512 MB, and a restart takes the worker down with
+the web tier. It is stated here rather than hidden, and on any plan with a
+separate worker process the two should be split again.
+
+**PostgreSQL instead of MySQL.** Render's free tier offers no MySQL, and its
+filesystem is ephemeral — SQLite would lose every row whenever the service
+restarts or wakes from idle. Nothing in the application is MySQL-specific; the
+migrations, the repositories and a full parse were all verified against
+PostgreSQL before this was committed.
+
+### Deploying from scratch
+
+1. **Create the blueprint.** In the Render dashboard choose **New → Blueprint**,
+   point it at this repository and apply. Render reads `render.yaml`, creates the
+   PostgreSQL instance and the web service, and generates `APP_KEY` once so it
+   stays stable across deploys.
+
+2. **Wait for the first build.** It takes several minutes: three Docker stages
+   run, one of which installs Node dependencies and builds the frontend bundle.
+
+3. **Fix the Sanctum domain.** This is the one step that cannot be pre-filled.
+   `render.yaml` ships a placeholder hostname; once Render assigns the real one,
+   set `SANCTUM_STATEFUL_DOMAINS` to that host in the dashboard and redeploy.
+   Skipping it makes login fail with `419 CSRF token mismatch` and no other
+   diagnostic — the cookie is issued but never accepted.
+
+4. **Verify the source is reachable.** Requests now leave a datacentre IP, which
+   Yandex challenges more readily than a residential one. Open a shell on the
+   service and run the parser directly:
+
+   ```bash
+   php artisan scrape:check "https://yandex.ru/maps/org/yandex/1124715036/"
+   ```
+
+   A table of figures means the deployment works end to end. `blocked` means the
+   region is being challenged: either move the service to another region or
+   supply proxies through `SCRAPING_PROXIES`, which the scraper already supports.
+
+No migration step is needed. The entrypoint runs `migrate --force` and reseeds
+the demo account on every boot; both are idempotent, so a restart cannot
+duplicate anything, and the demo login survives a database reset.
+
+### What the free plan means for whoever opens the link
+
+- **The service sleeps after about 15 minutes of inactivity.** The first request
+  after that takes roughly 30–60 seconds while the container starts, migrations
+  run and caches rebuild. Subsequent requests are immediate.
+- **A parse interrupted by sleep is not lost.** The job stays in the queue and is
+  retried when the worker comes back, because the queue lives in the database
+  rather than in memory.
+- **Render's free PostgreSQL expires.** Free instances are removed after a
+  limited period; the deployment has to be recreated afterwards. Fine for a
+  demonstration, not for anything that must stay up.
+
+### Verified before committing
+
+The production image was not written and pushed on trust. It was built locally,
+run against PostgreSQL and exercised end to end:
+
+- all three processes confirmed running under supervisor;
+- `/`, `/login` and the `/up` health check returning 200, a guest `/api/me`
+  returning 401;
+- a real card parsed by the worker **inside** the container — 137 reviews, job
+  log showing `RUNNING → DONE`;
+- pagination across three pages, rating filter, sort order, and rejection of
+  invalid parameters;
+- the image confirmed to contain no `.env` and no development compose file.
 
 ---
 
@@ -696,3 +805,7 @@ shares a timestamp — the case where ordering without a secondary key drifts.
    replayed.
 7. **2GIS.** The interfaces are already in place; it needs a second
    `ReviewsSource` implementation.
+8. **Split the worker back out in production.** Sharing a container with the web
+   tier is a concession to the free plan, not a design preference; on any plan
+   with background workers they should be separate services again, as they
+   already are in development.

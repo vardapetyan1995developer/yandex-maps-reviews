@@ -1,0 +1,88 @@
+# Render Blueprint — describes the whole deployment so it can be recreated from
+# the repository rather than assembled by hand in a dashboard.
+#
+# Apply it with: Render dashboard -> New -> Blueprint -> pick this repository.
+
+databases:
+  - name: yandex-maps-reviews-db
+    databaseName: yandex_reviews
+    user: yandex_reviews
+    plan: free
+
+services:
+  - type: web
+    name: yandex-maps-reviews
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./docker/production/Dockerfile
+    dockerContext: .
+    healthCheckPath: /up
+    autoDeploy: true
+
+    envVars:
+      # Generated once by Render and kept across deploys. Without a stable key
+      # every restart would invalidate existing sessions.
+      - key: APP_KEY
+        generateValue: true
+
+      - key: APP_NAME
+        value: Yandex Reviews
+      - key: APP_ENV
+        value: production
+      # Never true in production: the debug page prints environment variables,
+      # including database credentials
+      - key: APP_DEBUG
+        value: false
+      - key: APP_LOCALE
+        value: ru
+      - key: LOG_CHANNEL
+        value: stderr
+
+      # Database credentials come from the managed instance above
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DATABASE_URL
+        fromDatabase:
+          name: yandex-maps-reviews-db
+          property: connectionString
+
+      # The queue runs inside this same container (see supervisord.conf), so it
+      # needs a driver both processes can see. The database is the only shared
+      # store on the free plan.
+      - key: QUEUE_CONNECTION
+        value: database
+      - key: CACHE_STORE
+        value: database
+      - key: SESSION_DRIVER
+        value: database
+      # null binds the session cookie to whatever host serves the request, which
+      # is what makes it work on an onrender.com subdomain without further edits
+      - key: SESSION_DOMAIN
+        value: null
+
+      # Sanctum only issues a session cookie to origins listed here. Replace the
+      # placeholder with the real hostname after the first deploy, or login will
+      # fail with a 419 and no other explanation.
+      - key: SANCTUM_STATEFUL_DOMAINS
+        value: yandex-maps-reviews.onrender.com
+
+      - key: SEED_USER_NAME
+        value: Демо-пользователь
+      - key: SEED_USER_EMAIL
+        value: demo@example.com
+      # Override in the dashboard if the instance should not use the documented
+      # demo password
+      - key: SEED_USER_PASSWORD
+        value: password
+
+      # Scraping behaviour. The delay range is wider than the local default:
+      # requests leave a datacentre IP, which Yandex challenges more readily.
+      - key: SCRAPING_DELAY_MIN_MS
+        value: 800
+      - key: SCRAPING_DELAY_MAX_MS
+        value: 2000
+      - key: SCRAPING_YANDEX_MAX_REVIEWS
+        value: 600
+      - key: SCRAPING_HEADLESS_ENABLED
+        value: false

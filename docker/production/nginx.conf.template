@@ -1,0 +1,59 @@
+# Rendered by entrypoint.sh through envsubst, because the listening port is
+# supplied at runtime and nginx cannot read environment variables itself.
+
+user www-data;
+worker_processes auto;
+error_log /dev/stderr warn;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    access_log /dev/stdout;
+    sendfile on;
+    keepalive_timeout 65;
+    server_tokens off;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    server {
+        listen ${PORT};
+        server_name _;
+        root /var/www/public;
+        index index.php;
+
+        charset utf-8;
+        client_max_body_size 16m;
+
+        # Hashed asset filenames change on every build, so they can be cached
+        # indefinitely and served without touching PHP
+        location /build/ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            try_files $uri =404;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.php?$query_string;
+        }
+
+        location ~ \.php$ {
+            fastcgi_pass 127.0.0.1:9000;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            include fastcgi_params;
+            fastcgi_read_timeout 300;
+        }
+
+        location ~ /\.(?!well-known).* {
+            deny all;
+        }
+    }
+}

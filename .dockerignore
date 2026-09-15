@@ -1,0 +1,49 @@
+# Build context exclusions.
+#
+# Two reasons this file matters. Without it the local .env is copied into the
+# image, baking development credentials into an artefact that gets published;
+# and vendor/ plus node_modules/ are uploaded to the daemon on every build, for
+# dependencies the image installs itself anyway.
+
+# Secrets — never in an image
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Installed by the build stages themselves
+vendor
+node_modules
+
+# Build output, regenerated during the build
+public/build
+public/hot
+public/storage
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Local state that must not leak between environments
+storage/logs/*
+storage/framework/cache/data/*
+storage/framework/sessions/*
+storage/framework/views/*
+*.sqlite
+*.sqlite-journal
+bootstrap/cache/*.php
+
+# Tooling and editors
+.phpunit.cache
+.phpunit.result.cache
+.pint.cache
+.idea
+.vscode
+.zed
+.claude
+.DS_Store
+
+# Development-only compose setup
+docker-compose.yml
