@@ -19,6 +19,7 @@ or runs out of data — is the substance of this project.
 
 ## Contents
 
+- [What it looks like](#what-it-looks-like)
 - [Feature overview](#feature-overview)
 - [Quick start](#quick-start)
 - [Environment variables](#environment-variables)
@@ -36,6 +37,38 @@ or runs out of data — is the substance of this project.
 - [Testing](#testing)
 - [Operational notes](#operational-notes)
 - [What I would do with more time](#what-i-would-do-with-more-time)
+
+---
+
+## What it looks like
+
+Captured from the live deployment.
+
+**Sign-in.** No registration: one account, created by the seeder.
+
+![Sign-in](docs/screenshots/01-login.jpg)
+
+**Connected cards.** Each row carries its own parse status — note that the
+Yandex card reads *Получены частично*, because its review count exceeds what the
+source will serve.
+
+![Connected cards](docs/screenshots/02-settings.jpg)
+
+**Collection in progress.** The parse runs in a queued job; the page polls the
+run record and reports pages processed and reviews collected as they arrive.
+
+![Collection in progress](docs/screenshots/03-progress.jpg)
+
+**The card.** The three figures the brief asks for, kept apart and never summed:
+**21 232 ratings**, **5 864 reviews**, **600 collected**. The notice below
+explains the gap rather than leaving 600 to pass for the whole picture.
+
+![Organization card](docs/screenshots/04-organization.jpg)
+
+**Pagination.** 50 per page, 12 pages, switched without a reload — the reviews
+come from our own storage rather than a fresh parse on every click.
+
+![Pagination](docs/screenshots/05-pagination.jpg)
 
 ---
 
