@@ -8,7 +8,7 @@ Yandex provides no public API for reviews, so every figure on screen is obtained
 by parsing. That parser — and its behaviour when the source changes, blocks us
 or runs out of data — is the substance of this project.
 
-**Live demo:** _(URL added once the Render blueprint is applied)_
+**Live demo: <https://yandex-maps-reviews.onrender.com>**
 · sign in with `demo@example.com` / `password`
 
 > The demo runs on a free plan and sleeps after ~15 minutes of inactivity, so
@@ -404,13 +404,17 @@ PostgreSQL before this was committed.
 2. **Wait for the first build.** It takes several minutes: three Docker stages
    run, one of which installs Node dependencies and builds the frontend bundle.
 
-3. **Fix the Sanctum domain.** This is the one step that cannot be pre-filled.
-   `render.yaml` ships a placeholder hostname; once Render assigns the real one,
-   set `SANCTUM_STATEFUL_DOMAINS` to that host in the dashboard and redeploy.
-   Skipping it makes login fail with `419 CSRF token mismatch` and no other
+3. **Provide the two prompted values.** `APP_KEY` and `DB_URL` are marked
+   `sync: false`, so Render asks for them rather than reading them from the
+   repository. Generate the key with `php artisan key:generate --show` and paste
+   the connection string from the database provider.
+
+4. **Check the Sanctum domain.** `render.yaml` names the expected hostname; if
+   Render assigns a different one, set `SANCTUM_STATEFUL_DOMAINS` to match.
+   A mismatch makes login fail with `419 CSRF token mismatch` and no other
    diagnostic — the cookie is issued but never accepted.
 
-4. **Verify the source is reachable.** Requests now leave a datacentre IP, which
+5. **Verify the source is reachable.** Requests now leave a datacentre IP, which
    Yandex challenges more readily than a residential one. Open a shell on the
    service and run the parser directly:
 
@@ -438,10 +442,43 @@ duplicate anything, and the demo login survives a database reset.
   limited period; the deployment has to be recreated afterwards. Fine for a
   demonstration, not for anything that must stay up.
 
+### Four failures worth recording
+
+The deployment did not work first time, and each failure was silent in a
+different way. They are listed because "it deployed" is not the same as "it
+works", and each one cost real time to identify.
+
+**One free database per account.** The blueprint declared a Render PostgreSQL
+instance, which fails outright on an account that already has one — and because
+a blueprint applies atomically, it cancelled the web service too. The database
+is now external.
+
+**The wrong variable name.** The blueprint set `DATABASE_URL`, but Laravel reads
+`env('DB_URL')`. The value was ignored and the app fell back to `127.0.0.1`,
+which reads like a network fault rather than a typo.
+
+**No HOME for unprivileged processes.** php-fpm workers and the queue worker run
+as `www-data` but inherited `HOME=/root`. libpq looks there for an optional
+client certificate and aborts the connection on "Permission denied" instead of
+treating the file as absent. Migrations were fine — the entrypoint runs as root —
+so the deploy reported success while every page returned 500.
+
+**An untrusted proxy.** Render terminates TLS and forwards over HTTP, marking
+the scheme in `X-Forwarded-Proto`. Laravel ignores that header unless the proxy
+is trusted, so it generated `http://` asset URLs on an `https://` page. The
+browser blocked them as mixed content: a blank page behind a 200 response, with
+every API endpoint answering correctly. This one is invisible to any check that
+does not actually render the page.
+
+A fifth, milder one: Render's `generateValue` produces a key without the
+`base64:` prefix Laravel requires, which surfaces as "Unsupported cipher or
+incorrect key length" — a message that points at the cipher rather than the key.
+
 ### Verified before committing
 
-The production image was not written and pushed on trust. It was built locally,
-run against PostgreSQL and exercised end to end:
+The production image was built locally, run against PostgreSQL and exercised end
+to end before being pushed — and then the same checks were run again against the
+live deployment:
 
 - all three processes confirmed running under supervisor;
 - `/`, `/login` and the `/up` health check returning 200, a guest `/api/me`
@@ -451,6 +488,12 @@ run against PostgreSQL and exercised end to end:
 - pagination across three pages, rating filter, sort order, and rejection of
   invalid parameters;
 - the image confirmed to contain no `.env` and no development compose file.
+
+On the live instance, the same flow was driven through HTTPS: sign in, reject an
+invalid link, connect a card, wait for the worker to finish, then read back 137
+reviews across three pages with filtering and sorting. The card renders in the
+browser with the rating and both counters shown separately. No captcha was
+returned from the Frankfurt datacentre IP, which was the main open risk.
 
 ---
 
