@@ -326,11 +326,30 @@ Two strategies are implemented behind the `ScrapeStrategy` interface.
 
 | | |
 |---|---|
-| Speed | Minutes rather than seconds |
+| Speed | **45s** for the same 600 reviews, against 16s for the fast path — measured, not estimated |
 | Memory | Hundreds of megabytes per browser process |
-| Robustness to markup | High — it intercepts `fetchReviews` responses rather than reading the review DOM, so CSS renames are irrelevant |
-| Robustness to contract | **High** — the browser signs the requests, so a change to the algorithm costs nothing |
-| Deployment | Requires Node plus `npx playwright install chromium` |
+| Robustness to markup | **High** — it reads the server-rendered state and intercepts `fetchReviews` responses; it never parses review markup, so CSS renames are irrelevant |
+| Robustness to contract | **High** — the browser builds and signs the requests, so a change to the signing algorithm costs nothing |
+| Deployment | Requires Node plus `npm install -D playwright && npx playwright install chromium` |
+
+It is **not installed by default**, and deliberately not part of the production
+image: Chromium does not fit the free plan's 512 MB, and bundling it would add
+roughly 700 MB to a 207 MB image. `isAvailable()` probes for Node and the
+library and drops the strategy from the chain when either is missing, so the
+application runs unchanged without it.
+
+To exercise it locally:
+
+```bash
+npm install -D playwright && npx playwright install chromium
+# then set SCRAPING_HEADLESS_ENABLED=true
+```
+
+**Both strategies return identical records.** Verified on a live card: the same
+23 reviews, the same 23 `reviewId` values, and the same 23 content hashes. That
+matters more than it sounds — it means a mid-life switch between strategies
+produces no duplicates and no spurious revisions, because the idempotency key
+and the change-detection hash both survive the swap.
 
 **The decision: run the fast path, fall back only on a detected contract
 change.** The switching rule is deliberately narrow — the fallback fires on
@@ -473,6 +492,24 @@ does not actually render the page.
 A fifth, milder one: Render's `generateValue` produces a key without the
 `base64:` prefix Laravel requires, which surfaces as "Unsupported cipher or
 incorrect key length" — a message that points at the cipher rather than the key.
+
+### And two in the fallback strategy
+
+Installing Playwright and actually running the fallback turned up two more,
+both of which would have gone unnoticed while it sat behind a disabled flag.
+
+**A card that fits in one render issues no XHR at all.** The strategy was
+written to scroll and intercept `fetchReviews`, which is correct for a large
+card — but a card with 23 reviews server-renders all of them and never makes the
+request, so interception alone returned zero. It now reads the reviews out of
+the rendered state first and treats intercepted responses as the continuation.
+
+**Programmatic scrolling does not trigger the lazy-load.** Setting `scrollTop`
+or calling `scrollBy` moves the container — the offset genuinely reaches the
+bottom — but produces untrusted events, and the list stays at its first batch
+indefinitely. Driving the wheel through Playwright's input layer loads the rest.
+A related bug rode along: with no intercepted response there was no declared
+total, so a run that collected 50 of 5,864 reported itself complete.
 
 ### Verified before committing
 
@@ -845,7 +882,8 @@ shares a timestamp — the case where ordering without a secondary key drifts.
    learn about it before the user does.
 6. **HTTP-level strategy tests.** The strategies' network layer is not covered by
    `Http::fake()`; real source responses should be captured as fixtures and
-   replayed.
+   replayed. The headless strategy has been exercised by hand against live cards
+   but has no automated coverage, since that would mean running a browser in CI.
 7. **2GIS.** The interfaces are already in place; it needs a second
    `ReviewsSource` implementation.
 8. **Split the worker back out in production.** Sharing a container with the web

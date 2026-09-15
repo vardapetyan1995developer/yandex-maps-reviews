@@ -6,11 +6,16 @@
  * path (parsing the internal JSON API) has stopped working because Yandex
  * changed the contract.
  *
- * The essential point: this script does not parse markup and never reads the
- * review DOM. It opens the page, scrolls the feed and intercepts the very same
- * fetchReviews responses that Yandex's own frontend requests. That is why it
- * survives both CSS class renames and changes to the request-signing algorithm —
- * the browser signs them, not us.
+ * The essential point: this script never parses markup. It reads reviews from
+ * the server-rendered state the page already carries, and intercepts the same
+ * fetchReviews responses the frontend requests as it scrolls. Both sources carry
+ * the source's own reviewId, so records line up with the fast path and a repeat
+ * parse stays idempotent no matter which strategy produced it.
+ *
+ * Reading the state matters more than it looks: a card whose reviews all fit in
+ * the first render — anything under roughly fifty — issues no XHR at all, so a
+ * scroll-and-intercept approach alone comes back empty. That was found by
+ * running this against a real card rather than by reasoning about it.
  *
  * Exchange protocol with PHP:
  *   stdout — a single JSON result;
@@ -55,6 +60,33 @@ let organization = null;
 let pagesFetched = 0;
 let declaredCount = null;
 
+/**
+ * Map raw review objects into the shape PHP expects, keyed by the source's own
+ * reviewId. Both the server-rendered state and the intercepted XHR responses
+ * use the identical field names, so one routine serves both and duplicates
+ * between them collapse on their own.
+ */
+const collect = (list) => {
+  if (!Array.isArray(list)) {
+    return;
+  }
+
+  for (const review of list) {
+    if (!review?.reviewId || reviewsById.has(review.reviewId)) {
+      continue;
+    }
+
+    reviewsById.set(review.reviewId, {
+      externalId: review.reviewId,
+      author: review.author?.name ?? 'Аноним',
+      avatar: review.author?.avatarUrl?.replace('{size}', 'islands-68') ?? null,
+      rating: review.rating ?? null,
+      text: review.text ?? null,
+      publishedAt: review.updatedTime ?? null,
+    });
+  }
+};
+
 const browser = await chromium.launch({
   headless: true,
   args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
@@ -98,20 +130,7 @@ try {
     pagesFetched += 1;
     declaredCount = payload?.data?.params?.count ?? declaredCount;
 
-    for (const review of list) {
-      if (!review?.reviewId || reviewsById.has(review.reviewId)) {
-        continue;
-      }
-
-      reviewsById.set(review.reviewId, {
-        externalId: review.reviewId,
-        author: review.author?.name ?? 'Аноним',
-        avatar: review.author?.avatarUrl?.replace('{size}', 'islands-68') ?? null,
-        rating: review.rating ?? null,
-        text: review.text ?? null,
-        publishedAt: review.updatedTime ?? null,
-      });
-    }
+    collect(list);
 
     progress({
       pages: pagesFetched,
@@ -126,8 +145,9 @@ try {
     fail(EXIT_CAPTCHA, 'Yandex served a captcha');
   }
 
-  // Organization data comes from the same initial state the fast path uses
-  organization = await page.evaluate((id) => {
+  // The card and the first batch of reviews both come from the state the server
+  // rendered into the page — the same structure the fast path reads
+  const initial = await page.evaluate((id) => {
     const node = document.querySelector('script.state-view');
     if (!node) {
       return null;
@@ -147,35 +167,49 @@ try {
     }
 
     return {
-      externalId: String(item.id ?? id),
-      name: item.title ?? item.shortTitle ?? '',
-      address: item.fullAddress ?? item.address ?? null,
-      rating: item.ratingData?.ratingValue ?? null,
-      ratingsCount: item.ratingData?.ratingCount ?? 0,
-      reviewsCount: item.ratingData?.reviewCount ?? 0,
-      categories: (item.categories ?? []).map((category) => category?.name).filter(Boolean),
+      organization: {
+        externalId: String(item.id ?? id),
+        name: item.title ?? item.shortTitle ?? '',
+        address: item.fullAddress ?? item.address ?? null,
+        rating: item.ratingData?.ratingValue ?? null,
+        ratingsCount: item.ratingData?.ratingCount ?? 0,
+        reviewsCount: item.ratingData?.reviewCount ?? 0,
+        categories: (item.categories ?? []).map((category) => category?.name).filter(Boolean),
+      },
+      reviews: item.reviewResults?.reviews ?? [],
     };
   }, businessId);
 
-  if (!organization) {
+  if (!initial?.organization) {
     fail(EXIT_UNEXPECTED_PAGE, 'No initial state with an organization card found on the page');
   }
 
-  // Scroll the feed: more items load as we approach the end of the list.
-  // Stop once the limit is reached, or when several consecutive attempts bring
-  // back no new reviews.
+  organization = initial.organization;
+  collect(initial.reviews);
+  progress({ pages: pagesFetched, reviews: reviewsById.size, total: declaredCount });
+
+  // Scroll the feed so the remaining pages load.
+  //
+  // The wheel has to be driven through the input layer rather than by setting
+  // scrollTop or calling scrollBy. Those move the container — the scroll offset
+  // really does reach the bottom — but they produce untrusted events, and the
+  // lazy-load never fires: the list sits at its first batch forever. Verified
+  // both ways against a card with thousands of reviews; only the wheel loads
+  // more.
+  await page.mouse.move(400, 500);
+
   let idleRounds = 0;
   let previousCount = 0;
 
-  while (reviewsById.size < maxReviews && idleRounds < 4) {
-    await page.evaluate(() => {
-      const scrollable = document.querySelector('.scroll__container') ?? document.scrollingElement;
-      scrollable?.scrollBy(0, 4000);
-      window.scrollBy(0, 4000);
-    });
+  while (reviewsById.size < maxReviews && idleRounds < 3) {
+    for (let tick = 0; tick < 12; tick += 1) {
+      await page.mouse.wheel(0, 1200);
+      // A pause between ticks; a burst with no gaps is not how a person scrolls
+      await page.waitForTimeout(100 + Math.floor(Math.random() * 120));
+    }
 
-    // Jittered pause: perfectly even scrolling is a noticeable bot signal
-    await page.waitForTimeout(700 + Math.floor(Math.random() * 900));
+    // Give the request it triggered time to land
+    await page.waitForTimeout(1500 + Math.floor(Math.random() * 900));
 
     if (reviewsById.size === previousCount) {
       idleRounds += 1;
@@ -190,7 +224,12 @@ try {
   }
 
   const reviews = [...reviewsById.values()].slice(0, maxReviews);
-  const truncated = declaredCount !== null && reviews.length < declaredCount;
+
+  // Fall back to the card's own figure: declaredCount is only populated by an
+  // intercepted response, and a card small enough to render in one go never
+  // issues one. Without this a partial result reports itself as complete.
+  const expected = declaredCount ?? organization.reviewsCount ?? null;
+  const truncated = expected !== null && reviews.length < expected;
 
   process.stdout.write(
     JSON.stringify({
