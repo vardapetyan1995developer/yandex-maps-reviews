@@ -85,9 +85,9 @@ final class OrganizationSyncTest extends TestCase
         $first = $this->sync->sync($this->organization, $this->scrapeResult($reviews));
         $second = $this->sync->sync($this->organization->fresh(), $this->scrapeResult($reviews));
 
-        $this->assertSame(2, $first['created']);
-        $this->assertSame(0, $second['created']);
-        $this->assertSame(0, $second['updated']);
+        $this->assertSame(2, $first->created);
+        $this->assertSame(0, $second->created);
+        $this->assertSame(0, $second->updated);
         $this->assertSame(2, Review::count());
     }
 
@@ -133,7 +133,7 @@ final class OrganizationSyncTest extends TestCase
 
         $stats = $this->sync->sync($this->organization->fresh(), $this->scrapeResult([$this->review('a1')]));
 
-        $this->assertSame(1, $stats['disappeared']);
+        $this->assertSame(1, $stats->disappeared);
         $this->assertNotNull(Review::where('external_id', 'a2')->first()->disappeared_at);
         // The row is not deleted: a hidden review is a valuable fact, not noise
         $this->assertSame(2, Review::count());
@@ -154,7 +154,7 @@ final class OrganizationSyncTest extends TestCase
             $this->scrapeResult([$this->review('a1')], truncated: true),
         );
 
-        $this->assertSame(0, $stats['disappeared']);
+        $this->assertSame(0, $stats->disappeared);
         $this->assertNull(Review::where('external_id', 'a2')->first()->disappeared_at);
     }
 

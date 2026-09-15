@@ -4,18 +4,21 @@ declare(strict_types=1);
 
 namespace App\Services\Organizations;
 
+use App\Contracts\Repositories\OrganizationRepository;
+use App\Contracts\Repositories\ParseRunRepository;
+use App\Contracts\Repositories\ReviewRepository;
+use App\Data\ReviewData;
 use App\Data\ScrapeResult;
-use App\Enums\ParseStatus;
+use App\Data\SyncStats;
 use App\Models\Organization;
-use App\Models\OrganizationSnapshot;
 use App\Models\ParseRun;
 use App\Models\Review;
-use App\Models\ReviewRevision;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Writes a parse result to the database.
+ * Writes a parse result to storage.
  *
  * This is where idempotency lives: re-running a parse for the same organization
  * creates no duplicates but updates the existing records and captures exactly
@@ -30,56 +33,54 @@ use Illuminate\Support\Facades\DB;
  *   3. a review that has disappeared is not deleted but stamped with a
  *      disappearance date — for a reputation service, deleted negative feedback
  *      matters no less than new feedback.
+ *
+ * The service owns the transaction and the decision-making; the repositories
+ * own the queries. The boundary is deliberate — splitting a single transaction
+ * across two classes would be a real defect, not a matter of taste.
  */
-final class OrganizationSyncService
+final readonly class OrganizationSyncService
 {
-    /**
-     * @return array{created: int, updated: int, disappeared: int}
-     */
-    public function sync(Organization $organization, ScrapeResult $result, ?ParseRun $run = null): array
+    public function __construct(
+        private OrganizationRepository $organizations,
+        private ReviewRepository $reviews,
+        private ParseRunRepository $parseRuns,
+    ) {}
+
+    public function sync(Organization $organization, ScrapeResult $result, ?ParseRun $run = null): SyncStats
     {
-        return DB::transaction(function () use ($organization, $result, $run): array {
+        return DB::transaction(function () use ($organization, $result, $run): SyncStats {
             $now = CarbonImmutable::now();
 
             $stats = $this->syncReviews($organization, $result, $run, $now);
 
-            $organization->fill([
-                'name' => $result->organization->name,
-                'address' => $result->organization->address,
-                'categories' => $result->organization->categories,
-                'rating' => $result->organization->rating,
-                'ratings_count' => $result->organization->ratingsCount,
-                'reviews_count' => $result->organization->reviewsCount,
-                'reviews_stored' => $organization->reviews()->whereNull('disappeared_at')->count(),
-                'parse_status' => $result->truncated ? ParseStatus::Partial : ParseStatus::Success,
-                'last_parsed_at' => $now,
-            ])->save();
+            $this->organizations->applyScrapeResult(
+                organization: $organization,
+                data: $result->organization,
+                status: $this->parseRuns->statusFor($result),
+                reviewsStored: $this->reviews->countVisible($organization),
+                parsedAt: $now,
+            );
 
-            $this->recordSnapshot($organization, $result, $run, $now);
+            $this->organizations->recordSnapshot($organization, $result->organization, $run, $now);
 
             return $stats;
         });
     }
 
-    /**
-     * @return array{created: int, updated: int, disappeared: int}
-     */
-    private function syncReviews(Organization $organization, ScrapeResult $result, ?ParseRun $run, CarbonImmutable $now): array
-    {
+    private function syncReviews(
+        Organization $organization,
+        ScrapeResult $result,
+        ?ParseRun $run,
+        CarbonImmutable $now,
+    ): SyncStats {
         if ($result->reviews === []) {
-            return ['created' => 0, 'updated' => 0, 'disappeared' => 0];
+            return SyncStats::empty();
         }
 
-        // Load existing reviews in a single query and hold them in memory: 600
-        // rows is not much, whereas per-row SELECTs would turn this save into
-        // 600 round trips to the database.
-        $existing = $organization->reviews()
-            ->whereIn('external_id', array_map(
-                static fn ($review) => $review->externalId,
-                $result->reviews,
-            ))
-            ->get()
-            ->keyBy('external_id');
+        $existing = $this->reviews->findExistingByExternalIds(
+            $organization,
+            array_map(static fn (ReviewData $review): string => $review->externalId, $result->reviews),
+        );
 
         $created = 0;
         $updated = 0;
@@ -87,59 +88,59 @@ final class OrganizationSyncService
 
         foreach ($result->reviews as $data) {
             $seenIds[] = $data->externalId;
-            $hash = $data->contentHash();
 
-            /** @var Review|null $review */
-            $review = $existing->get($data->externalId);
-
-            if ($review === null) {
-                Review::create([
-                    'organization_id' => $organization->id,
-                    'external_id' => $data->externalId,
-                    'author_name' => $data->authorName,
-                    'author_avatar' => $data->authorAvatar,
-                    'rating' => $data->rating,
-                    'text' => $data->text,
-                    'published_at' => $data->publishedAt,
-                    'content_hash' => $hash,
-                    'first_seen_at' => $now,
-                    'last_seen_at' => $now,
-                ]);
-
-                $created++;
-
-                continue;
+            if ($this->persist($organization, $data, $existing, $run, $now)) {
+                $existing->has($data->externalId) ? $updated++ : $created++;
             }
-
-            // Content unchanged — refresh only the "seen just now" stamp. This
-            // is the most frequent case and must also be the cheapest.
-            if ($review->content_hash === $hash && $review->disappeared_at === null) {
-                $review->forceFill(['last_seen_at' => $now])->save();
-
-                continue;
-            }
-
-            if ($review->content_hash !== $hash) {
-                $this->recordRevision($review, $data->rating, $data->text, $run);
-                $updated++;
-            }
-
-            $review->forceFill([
-                'author_name' => $data->authorName,
-                'author_avatar' => $data->authorAvatar,
-                'rating' => $data->rating,
-                'text' => $data->text,
-                'published_at' => $data->publishedAt,
-                'content_hash' => $hash,
-                'last_seen_at' => $now,
-                // The review is back in the listing — clear the disappearance stamp
-                'disappeared_at' => null,
-            ])->save();
         }
 
-        $disappeared = $this->markDisappeared($organization, $result, $seenIds, $now);
+        return new SyncStats(
+            created: $created,
+            updated: $updated,
+            disappeared: $this->markDisappeared($organization, $result, $seenIds, $now),
+        );
+    }
 
-        return ['created' => $created, 'updated' => $updated, 'disappeared' => $disappeared];
+    /**
+     * Persist one review.
+     *
+     * @param  Collection<string, Review>  $existing
+     * @return bool whether the row was created or its content changed
+     */
+    private function persist(
+        Organization $organization,
+        ReviewData $data,
+        Collection $existing,
+        ?ParseRun $run,
+        CarbonImmutable $now,
+    ): bool {
+        $review = $existing->get($data->externalId);
+
+        if (! $review instanceof Review) {
+            $this->reviews->create($organization, $data, $now);
+
+            return true;
+        }
+
+        $hasChanged = $review->content_hash !== $data->contentHash();
+
+        // Content unchanged — refresh only the "seen just now" stamp. This is
+        // the most frequent case by far and must also be the cheapest.
+        if (! $hasChanged && $review->disappeared_at === null) {
+            $this->reviews->touchLastSeen($review, $now);
+
+            return false;
+        }
+
+        // The revision is recorded before the change is applied, because it
+        // reads the review's current values as the "before" side
+        if ($hasChanged) {
+            $this->reviews->recordRevision($review, $data, $run, $now);
+        }
+
+        $this->reviews->applyChanges($review, $data, $now);
+
+        return $hasChanged;
     }
 
     /**
@@ -151,43 +152,16 @@ final class OrganizationSyncService
      *
      * @param  list<string>  $seenIds
      */
-    private function markDisappeared(Organization $organization, ScrapeResult $result, array $seenIds, CarbonImmutable $now): int
-    {
+    private function markDisappeared(
+        Organization $organization,
+        ScrapeResult $result,
+        array $seenIds,
+        CarbonImmutable $now,
+    ): int {
         if ($result->truncated) {
             return 0;
         }
 
-        return $organization->reviews()
-            ->whereNotIn('external_id', $seenIds)
-            ->whereNull('disappeared_at')
-            ->update(['disappeared_at' => $now]);
-    }
-
-    private function recordRevision(Review $review, ?int $newRating, ?string $newText, ?ParseRun $run): void
-    {
-        ReviewRevision::create([
-            'review_id' => $review->id,
-            'parse_run_id' => $run?->id,
-            'old_rating' => $review->rating,
-            'new_rating' => $newRating,
-            'old_text' => $review->text,
-            'new_text' => $newText,
-            'created_at' => CarbonImmutable::now(),
-        ]);
-    }
-
-    private function recordSnapshot(Organization $organization, ScrapeResult $result, ?ParseRun $run, CarbonImmutable $now): void
-    {
-        OrganizationSnapshot::create([
-            'organization_id' => $organization->id,
-            'parse_run_id' => $run?->id,
-            'name' => $result->organization->name,
-            'rating' => $result->organization->rating,
-            'ratings_count' => $result->organization->ratingsCount,
-            'reviews_count' => $result->organization->reviewsCount,
-            'reviews_stored' => $organization->reviews_stored,
-            'payload' => $result->organization->toSnapshot(),
-            'created_at' => $now,
-        ]);
+        return $this->reviews->markDisappeared($organization, $seenIds, $now);
     }
 }

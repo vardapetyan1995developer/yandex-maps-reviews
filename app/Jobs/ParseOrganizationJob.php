@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Contracts\Repositories\OrganizationRepository;
+use App\Contracts\Repositories\ParseRunRepository;
 use App\Data\ScrapeProgress;
 use App\Enums\FailureReason;
 use App\Enums\ParseStatus;
@@ -84,11 +86,15 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
         return [30, 120, 300];
     }
 
-    public function handle(SourceRegistry $registry, OrganizationSyncService $sync): void
-    {
-        $organization = Organization::find($this->organizationId);
+    public function handle(
+        SourceRegistry $registry,
+        OrganizationSyncService $sync,
+        OrganizationRepository $organizations,
+        ParseRunRepository $parseRuns,
+    ): void {
+        $organization = $organizations->findById($this->organizationId);
 
-        if ($organization === null) {
+        if (! $organization instanceof Organization) {
             return;
         }
 
@@ -97,51 +103,32 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        $run = $this->resolveRun($organization);
+        $run = $this->resolveRun($organization, $parseRuns);
 
-        $organization->forceFill(['parse_status' => ParseStatus::Running])->save();
-        $run->forceFill([
-            'status' => ParseStatus::Running,
-            'attempt' => $this->attempts(),
-            'started_at' => CarbonImmutable::now(),
-        ])->save();
+        $organizations->updateStatus($organization, ParseStatus::Running);
+        $parseRuns->markRunning($run, $this->attempts(), CarbonImmutable::now());
 
         try {
             $source = $registry->forKey($organization->source);
             $reference = $source->reference($organization->url);
 
-            $result = $source->scrape($reference, $this->progressReporter($run));
-
+            $result = $source->scrape($reference, $this->progressReporter($run, $parseRuns));
             $stats = $sync->sync($organization, $result, $run);
 
-            $run->forceFill([
-                'status' => $result->truncated ? ParseStatus::Partial : ParseStatus::Success,
-                'strategy' => $result->strategy,
-                'pages_fetched' => $result->pagesFetched,
-                'reviews_found' => $result->reviewCount(),
-                'reviews_created' => $stats['created'],
-                'reviews_updated' => $stats['updated'],
-                'truncated' => $result->truncated,
-                'truncation_reason' => $result->truncationReason,
-                'progress_percent' => 100,
-                'finished_at' => CarbonImmutable::now(),
-                'error_code' => null,
-                'error_message' => null,
-                'error_context' => null,
-            ])->save();
+            $parseRuns->recordSuccess($run, $result, $stats, CarbonImmutable::now());
 
             Log::info('Organization parse finished', [
-                'organization_id' => $organization->id,
+                'organization_id' => $organization->getKey(),
                 'strategy' => $result->strategy,
                 'reviews' => $result->reviewCount(),
-                'created' => $stats['created'],
-                'updated' => $stats['updated'],
-                'disappeared' => $stats['disappeared'],
+                'created' => $stats->created,
+                'updated' => $stats->updated,
+                'disappeared' => $stats->disappeared,
                 'truncated' => $result->truncated,
                 'completeness' => round($result->completeness(), 3),
             ]);
         } catch (ScrapingException $e) {
-            $this->handleFailure($organization, $run, $e->reason(), $e->getMessage(), $e->context());
+            $this->handleFailure($organization, $run, $organizations, $parseRuns, $e->reason(), $e->getMessage(), $e->context());
 
             // Drop non-retryable causes (schema change, broken link) from the
             // queue immediately: a retry will not fix them but will occupy a slot
@@ -156,6 +143,8 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
             $this->handleFailure(
                 $organization,
                 $run,
+                $organizations,
+                $parseRuns,
                 FailureReason::Unknown,
                 $e->getMessage(),
                 ['exception' => $e::class],
@@ -166,37 +155,29 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
     }
 
     /**
-     * Progress is written to the database as collection proceeds so the
-     * interface can show movement while the job is still running.
+     * Progress is written to storage as collection proceeds so the interface
+     * can show movement while the job is still running.
      *
      * @return callable(ScrapeProgress): void
      */
-    private function progressReporter(ParseRun $run): callable
+    private function progressReporter(ParseRun $run, ParseRunRepository $parseRuns): callable
     {
-        return static function (ScrapeProgress $progress) use ($run): void {
-            $run->forceFill([
-                'pages_fetched' => $progress->pagesFetched,
-                'reviews_found' => $progress->reviewsFetched,
-                'progress_total' => $progress->totalExpected,
-                'progress_percent' => $progress->percent(),
-            ])->save();
+        return static function (ScrapeProgress $progress) use ($run, $parseRuns): void {
+            $parseRuns->recordProgress($run, $progress);
         };
     }
 
-    private function resolveRun(Organization $organization): ParseRun
+    private function resolveRun(Organization $organization, ParseRunRepository $parseRuns): ParseRun
     {
         if ($this->parseRunId !== null) {
-            $run = ParseRun::find($this->parseRunId);
+            $run = $parseRuns->findById($this->parseRunId);
 
-            if ($run !== null) {
+            if ($run instanceof ParseRun) {
                 return $run;
             }
         }
 
-        return $organization->parseRuns()->create([
-            'status' => ParseStatus::Queued,
-            'attempt' => $this->attempts(),
-        ]);
+        return $parseRuns->start($organization, $this->attempts());
     }
 
     /**
@@ -205,23 +186,18 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
     private function handleFailure(
         Organization $organization,
         ParseRun $run,
+        OrganizationRepository $organizations,
+        ParseRunRepository $parseRuns,
         FailureReason $reason,
         string $message,
         array $context,
     ): void {
         $isLastAttempt = $this->attempts() >= $this->tries || ! $reason->isRetryable();
 
-        $run->forceFill([
-            'status' => $isLastAttempt ? ParseStatus::Failed : ParseStatus::Queued,
-            'error_code' => $reason,
-            'error_message' => $message,
-            'error_context' => $context,
-            'attempt' => $this->attempts(),
-            'finished_at' => $isLastAttempt ? CarbonImmutable::now() : null,
-        ])->save();
+        $parseRuns->recordFailure($run, $reason, $message, $context, $this->attempts(), $isLastAttempt);
 
         if ($isLastAttempt) {
-            $organization->forceFill(['parse_status' => ParseStatus::Failed])->save();
+            $organizations->updateStatus($organization, ParseStatus::Failed);
         }
 
         // A schema change is the only cause that requires a code change, so it
@@ -230,7 +206,7 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
         $level = $reason->requiresDeveloperAttention() ? 'error' : 'warning';
 
         Log::log($level, 'Organization parse failed', [
-            'organization_id' => $organization->id,
+            'organization_id' => $organization->getKey(),
             'url' => $organization->url,
             'reason' => $reason->value,
             'message' => $message,
@@ -247,20 +223,19 @@ final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
      */
     public function failed(?Throwable $exception): void
     {
-        $organization = Organization::find($this->organizationId);
+        $organizations = app(OrganizationRepository::class);
+        $organization = $organizations->findById($this->organizationId);
 
-        if ($organization === null) {
+        if (! $organization instanceof Organization) {
             return;
         }
 
-        $organization->forceFill(['parse_status' => ParseStatus::Failed])->save();
+        $organizations->updateStatus($organization, ParseStatus::Failed);
 
-        $organization->parseRuns()
-            ->whereIn('status', [ParseStatus::Queued->value, ParseStatus::Running->value])
-            ->update([
-                'status' => ParseStatus::Failed->value,
-                'error_message' => $exception?->getMessage() ?? 'Джоба завершилась аварийно',
-                'finished_at' => CarbonImmutable::now(),
-            ]);
+        app(ParseRunRepository::class)->failUnfinished(
+            $organization,
+            $exception?->getMessage() ?? 'Джоба завершилась аварийно',
+            CarbonImmutable::now(),
+        );
     }
 }

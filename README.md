@@ -321,10 +321,14 @@ background and no baseline against which to compute a change history.
 
 ```
 app/
-├── Contracts/                      ReviewsSource, ScrapeStrategy, SourceUrlParser
+├── Contracts/
+│   ├── ReviewsSource, ScrapeStrategy, SourceUrlParser
+│   └── Repositories/               OrganizationRepository, ReviewRepository,
+│                                   ParseRunRepository
+├── Repositories/Eloquent/          Implementations of the three contracts
 ├── Data/                           SourceReference, OrganizationData, ReviewData,
-│                                   ScrapeResult, ScrapeProgress
-├── Enums/                          ParseStatus, FailureReason
+│                                   ScrapeResult, ScrapeProgress, ReviewQuery, SyncStats
+├── Enums/                          ParseStatus, FailureReason, ReviewSort
 ├── Exceptions/Scraping/            Exception hierarchy with machine-readable causes
 ├── Jobs/
 │   └── ParseOrganizationJob        Background collection with progress and retries
@@ -350,12 +354,50 @@ app/
 ```
 
 Controllers are thin by design. Link parsing lives in the source, the parse in a
-job, persistence in the sync service. No route or controller makes a call to an
-external source.
+job, persistence behind the repositories. No route or controller makes a call to
+an external source, and none builds a query.
 
 Adding a new platform (2GIS, for instance) means implementing `ReviewsSource`
 and adding one line to `ScrapingServiceProvider`. Controllers, models, jobs and
 the frontend stay untouched.
+
+### On the repository layer
+
+Two kinds of abstraction are present here, and they earn their place
+differently.
+
+`ReviewsSource` and `ScrapeStrategy` have **more than one real implementation**
+and are genuinely swapped at runtime — Yandex today and 2GIS next, the JSON API
+by default and a headless browser when the contract breaks. Those are
+load-bearing.
+
+The repositories are a **layering decision**, not a swap point: there will only
+ever be one Eloquent implementation, and pretending otherwise would be
+dishonest. What justifies them is that they hold domain knowledge which would
+otherwise be scattered across callers:
+
+- what "visible" means — a review that disappeared from the source still exists
+  as a row but must stay out of every listing and count;
+- that ordering always needs a unique tie-breaker, or rows sharing a timestamp
+  reorder between queries and the same review surfaces on two pages;
+- that there is at most **one pending run per card**, because the parse job is
+  unique per organization and a second row would be orphaned.
+
+Each of those is a rule about the data, and each is now stated in exactly one
+place. The methods are named for those intentions — `paginateVisible`,
+`findExistingByExternalIds`, `markDisappeared` — rather than as CRUD verbs. A
+repository whose methods are `find`, `all` and `save` is pure indirection over
+the ORM and is worth avoiding.
+
+Filtering and pagination arrive as a single `ReviewQuery` object, so the
+repository cannot accumulate methods such as `findByRatingAndSortAndPage()` as
+new filters appear, and the sort order is a `ReviewSort` enum, so an unsupported
+value cannot reach the query builder at all.
+
+One boundary is deliberately *not* crossed: `OrganizationSyncService` keeps the
+transaction and the decision-making. The repositories own the queries, but a
+transaction split across two classes would be a genuine defect rather than a
+matter of taste.
 
 ### Frontend
 
@@ -572,7 +614,7 @@ Fully implemented in `OrganizationSyncService`.
 php artisan test
 ```
 
-**70 tests, 174 assertions.** No test touches the network.
+**83 tests, 196 assertions.** No test touches the network.
 
 | Suite | Coverage |
 |---|---|
@@ -583,6 +625,8 @@ php artisan test
 | `OrganizationTest` | Validation, queueing rather than inline parsing, per-user isolation |
 | `ReviewPaginationTest` | 50 per page, no duplicates across pages under identical timestamps |
 | `OrganizationSyncTest` | Idempotency, revisions, snapshots, truncated-run safety |
+| `ReviewRepositoryTest` | Visibility rules, stable ordering, per-organization isolation |
+| `ParseRunRepositoryTest` | Pending-run reuse, so a dropped duplicate dispatch cannot orphan a run |
 
 Two of these encode findings that would otherwise be easy to regress: the
 signing vectors, and the assertion that pages never overlap when every review

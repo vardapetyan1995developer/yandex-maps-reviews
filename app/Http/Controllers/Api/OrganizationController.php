@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Contracts\Repositories\OrganizationRepository;
+use App\Contracts\Repositories\ParseRunRepository;
 use App\Enums\ParseStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreOrganizationRequest;
@@ -18,24 +20,23 @@ use Illuminate\Http\Request;
  * Manages connected organization cards.
  *
  * The controller is deliberately thin: link parsing lives in the source, the
- * parse itself in a job, and persistence in the sync service. Only HTTP
- * responsibilities remain here — check authorisation, create the record, queue
- * the work.
+ * parse itself in a job, and persistence behind the repositories. Only HTTP
+ * responsibilities remain here — check authorisation, delegate, queue the work.
  */
 final class OrganizationController extends Controller
 {
-    public function __construct(private readonly SourceRegistry $registry) {}
+    public function __construct(
+        private readonly SourceRegistry $registry,
+        private readonly OrganizationRepository $organizations,
+        private readonly ParseRunRepository $parseRuns,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
-        $organizations = $request->user()
-            ->organizations()
-            ->with('latestParseRun')
-            ->latest()
-            ->get();
-
         return response()->json([
-            'data' => OrganizationResource::collection($organizations),
+            'data' => OrganizationResource::collection(
+                $this->organizations->allForUser($request->user()),
+            ),
         ]);
     }
 
@@ -50,25 +51,11 @@ final class OrganizationController extends Controller
     {
         $url = (string) $request->validated('url');
 
-        $source = $this->registry->forUrl($url);
-        $reference = $source->reference($url);
+        $reference = $this->registry->forUrl($url)->reference($url);
+        $organization = $this->organizations->connect($request->user(), $reference);
+        $run = $this->parseRuns->queue($organization);
 
-        $organization = Organization::updateOrCreate(
-            [
-                'source' => $reference->source,
-                'external_id' => $reference->externalId,
-            ],
-            [
-                'user_id' => $request->user()->id,
-                'slug' => $reference->slug,
-                'url' => $reference->canonicalUrl,
-                'parse_status' => ParseStatus::Queued,
-            ],
-        );
-
-        $run = $organization->parseRuns()->create(['status' => ParseStatus::Queued]);
-
-        ParseOrganizationJob::dispatch($organization->id, $run->id);
+        ParseOrganizationJob::dispatch($organization->getKey(), $run->getKey());
 
         return response()->json([
             'data' => OrganizationResource::make($organization->load('latestParseRun')),
@@ -76,12 +63,10 @@ final class OrganizationController extends Controller
         ], 201);
     }
 
-    public function show(Request $request, Organization $organization): JsonResponse
+    public function show(Request $request, int $organization): JsonResponse
     {
-        $this->authorizeAccess($request, $organization);
-
         return response()->json([
-            'data' => OrganizationResource::make($organization->load('latestParseRun')),
+            'data' => OrganizationResource::make($this->authorized($request, $organization)),
         ]);
     }
 
@@ -91,45 +76,47 @@ final class OrganizationController extends Controller
      * Useful to the user (refresh the data) and as a recovery path after a
      * source failure without having to recreate the card.
      */
-    public function refresh(Request $request, Organization $organization): JsonResponse
+    public function refresh(Request $request, int $organization): JsonResponse
     {
-        $this->authorizeAccess($request, $organization);
+        $card = $this->authorized($request, $organization);
 
-        if ($organization->parse_status->isRunning()) {
+        if ($card->parse_status->isRunning()) {
             return response()->json([
                 'message' => 'Сбор данных по этой организации уже идёт.',
-                'data' => OrganizationResource::make($organization->load('latestParseRun')),
+                'data' => OrganizationResource::make($card),
             ], 409);
         }
 
-        $organization->forceFill(['parse_status' => ParseStatus::Queued])->save();
-        $run = $organization->parseRuns()->create(['status' => ParseStatus::Queued]);
+        $this->organizations->updateStatus($card, ParseStatus::Queued);
+        $run = $this->parseRuns->queue($card);
 
-        ParseOrganizationJob::dispatch($organization->id, $run->id);
+        ParseOrganizationJob::dispatch($card->getKey(), $run->getKey());
 
         return response()->json([
-            'data' => OrganizationResource::make($organization->fresh()->load('latestParseRun')),
+            'data' => OrganizationResource::make($card->fresh()->load('latestParseRun')),
             'message' => 'Обновление запущено.',
         ], 202);
     }
 
-    public function destroy(Request $request, Organization $organization): JsonResponse
+    public function destroy(Request $request, int $organization): JsonResponse
     {
-        $this->authorizeAccess($request, $organization);
-
-        $organization->delete();
+        $this->organizations->delete($this->authorized($request, $organization));
 
         return response()->json(['message' => 'Карточка отключена.']);
     }
 
     /**
-     * Only the user who connected a card can see it.
+     * Resolve a card that belongs to the current user, or abort.
      *
      * 404 rather than 403 is deliberate: a 403 would confirm that someone
      * else's record exists.
      */
-    private function authorizeAccess(Request $request, Organization $organization): void
+    private function authorized(Request $request, int $id): Organization
     {
-        abort_unless($organization->user_id === $request->user()->id, 404);
+        $card = $this->organizations->findForUser($id, $request->user());
+
+        abort_unless($card instanceof Organization, 404);
+
+        return $card;
     }
 }

@@ -301,9 +301,13 @@ final class InternalApiStrategy implements ScrapeStrategy
     }
 
     /**
-     * @param  mixed  $raw
+     * Map one decoded review object.
+     *
+     * The parameter is `mixed` rather than `array` on purpose: this is
+     * untrusted JSON from a third party, and the shape is checked here rather
+     * than assumed by a type declaration that would fatal on bad input.
      */
-    private function mapReview($raw): ?ReviewData
+    private function mapReview(mixed $raw): ?ReviewData
     {
         if (! is_array($raw)) {
             return null;

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\LoginRequest;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -58,14 +59,14 @@ final class AuthController extends Controller
     }
 
     /**
-     * @return array<string, mixed>
+     * @return array{id: int, name: string, email: string}
      */
-    private function userPayload(mixed $user): array
+    private function userPayload(User $user): array
     {
         return [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
+            'id' => (int) $user->getKey(),
+            'name' => (string) $user->name,
+            'email' => (string) $user->email,
         ];
     }
 }

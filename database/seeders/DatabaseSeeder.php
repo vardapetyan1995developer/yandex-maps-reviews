@@ -21,7 +21,7 @@ final class DatabaseSeeder extends Seeder
     {
         $email = (string) env('SEED_USER_EMAIL', 'demo@example.com');
 
-        User::updateOrCreate(
+        User::query()->updateOrCreate(
             ['email' => $email],
             [
                 'name' => (string) env('SEED_USER_NAME', 'Демо-пользователь'),
