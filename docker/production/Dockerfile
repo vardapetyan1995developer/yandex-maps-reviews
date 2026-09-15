@@ -67,6 +67,10 @@ RUN { \
         echo 'pm.min_spare_servers = 1'; \
         echo 'pm.max_spare_servers = 3'; \
         echo 'clear_env = no'; \
+        # Pool workers run as www-data; without an explicit HOME they inherit
+        # /root, and libpq fails the connection outright when it cannot read
+        # the optional client certificate there
+        echo 'env[HOME] = /var/www'; \
     } > /usr/local/etc/php-fpm.d/zz-app.conf
 
 WORKDIR /var/www
