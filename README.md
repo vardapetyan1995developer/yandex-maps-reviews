@@ -149,7 +149,8 @@ numbers keep a MySQL or Redis already running on the machine from making
 > under Docker Desktop → Settings → Resources → File Sharing.
 
 Requires PHP **8.4** (the lock resolves Symfony 8.x, which will not install on
-8.3) and Node 20+. Both Docker images already provide them.
+8.3) and Node **20.19+ or 22.12+** — Vite 8 rejects anything between, including
+the whole of Node 21. Both Docker images already provide suitable versions.
 
 MySQL and PostgreSQL are both supported and both were exercised with a full
 parse — MySQL locally, PostgreSQL in the production image. Nothing in the
