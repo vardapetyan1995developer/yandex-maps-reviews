@@ -41,6 +41,14 @@ final class RequestSignerTest extends TestCase
                 .'&page=1&pageSize=50&ranking=by_time&sessionId=sess-abc',
                 '241859068',
             ],
+            // Non-ASCII vectors, computed with the browser's own function in
+            // Node. charCodeAt works on UTF-16 code units, so these are the
+            // cases where a byte- or code-point-based port drifts silently.
+            'cyrillic value' => ['кафе', '2048325886'],
+            'a percent-encoded cyrillic value, as it appears in a real query' => [
+                'q=%D0%BA%D0%B0%D1%84%D0%B5',
+                '1353536706',
+            ],
         ];
     }
 
@@ -87,10 +95,14 @@ final class RequestSignerTest extends TestCase
     }
 
     #[Test]
-    public function it_handles_non_ascii_values_as_utf16_code_units(): void
+    public function it_hashes_astral_characters_as_surrogate_pairs(): void
     {
-        // charCodeAt in JS operates on UTF-16 code units; check that Cyrillic
-        // does not break the computation
-        $this->assertMatchesRegularExpression('~^\d+$~', $this->signer->hash('кафе'));
+        // U+1F600 is one code point but two UTF-16 code units (D83D DE00), and
+        // charCodeAt sees the units. The values come from running the browser's
+        // function in Node; an implementation iterating code points would
+        // produce different numbers, and every signature carrying such a
+        // character would be rejected.
+        $this->assertSame('5308056', $this->signer->hash('😀'));
+        $this->assertSame('2107363035', $this->signer->hash('a😀b'));
     }
 }

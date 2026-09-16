@@ -31,9 +31,10 @@ use Throwable;
  * tens of seconds at best. For a chain of fifty branches such a request would
  * hit the timeout without fail.
  *
- * One job per organization. A branch network is a batch of these jobs: overall
- * progress is tracked per batch, and one failing branch does not bring down the
- * rest.
+ * One job per organization. The job is batch-aware so that a branch network can
+ * be dispatched as a batch of these: progress is then tracked per batch, and one
+ * failing branch does not bring down the rest. Assembling such a batch is not
+ * part of the application yet; the interface connects one card at a time.
  */
 final class ParseOrganizationJob implements ShouldBeUnique, ShouldQueue
 {

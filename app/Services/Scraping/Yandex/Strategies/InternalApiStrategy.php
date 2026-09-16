@@ -9,6 +9,7 @@ use App\Data\ReviewData;
 use App\Data\ScrapeProgress;
 use App\Data\ScrapeResult;
 use App\Data\SourceReference;
+use App\Enums\FailureReason;
 use App\Exceptions\Scraping\ScrapingException;
 use App\Exceptions\Scraping\SourceBlockedException;
 use App\Exceptions\Scraping\SourceUnavailableException;
@@ -85,9 +86,6 @@ final class InternalApiStrategy implements ScrapeStrategy
 
         try {
             $result = $this->run($reference, $proxy, $onProgress);
-            $this->proxies->markHealthy($proxy);
-
-            return $result;
         } catch (SourceBlockedException $e) {
             // Take the blocked address out of rotation, otherwise the next job
             // goes through it again and only extends the block
@@ -95,6 +93,18 @@ final class InternalApiStrategy implements ScrapeStrategy
 
             throw $e;
         }
+
+        // A block partway through does not surface as an exception: run()
+        // keeps what was collected and returns a truncated result. The address
+        // is no less banned for that, so the accounting has to look at the
+        // truncation reason rather than at whether anything was thrown.
+        if ($result->truncationReason === FailureReason::Blocked->value) {
+            $this->proxies->markBlocked($proxy);
+        } else {
+            $this->proxies->markHealthy($proxy);
+        }
+
+        return $result;
     }
 
     private function run(SourceReference $reference, ?string $proxy, ?callable $onProgress): ScrapeResult

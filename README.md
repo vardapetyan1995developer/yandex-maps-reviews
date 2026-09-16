@@ -228,6 +228,7 @@ The full annotated list lives in `.env.example`. The ones that matter:
 | `SESSION_DOMAIN` | `null` binds the cookie to the request host |
 | `SANCTUM_STATEFUL_DOMAINS` | Frontend origins; a mismatch makes login return 419 |
 | `QUEUE_CONNECTION` | `database` or `redis` |
+| `DB_QUEUE_RETRY_AFTER` | Must exceed the job timeout of 600 s; defaults to 660 so a long parse is not handed to a second worker mid-run |
 | `SEED_USER_EMAIL`, `SEED_USER_PASSWORD` | Credentials for the seeded account |
 | `SCRAPING_DELAY_MIN_MS`, `SCRAPING_DELAY_MAX_MS` | Range for the randomised inter-request pause |
 | `SCRAPING_PROXIES` | Comma-separated proxy list |
@@ -800,8 +801,12 @@ the source — impossible synchronously inside an HTTP request.
   Polling stops as soon as the run finishes.
 - `failed()` records the cause in `parse_runs` rather than losing it in
   `failed_jobs`.
-- A branch network is a `Bus::batch` of these jobs: aggregate progress per batch,
-  with `allowFailures` so one failing branch does not abort the rest.
+- A branch network is meant to be a `Bus::batch` of these jobs. The job is
+  batch-aware today — it uses `Batchable`, stops early when its batch has been
+  cancelled, and the `job_batches` table is migrated — but the code that
+  assembles a batch for a network of branches is not written yet; the interface
+  connects one card at a time. When it is, `allowFailures` keeps one blocked
+  branch from aborting the rest, and progress comes from the batch record.
 - **Partial results are persisted.** If collection breaks off midway, the reviews
   already gathered are saved and the status is `partial` rather than `failed`.
   Only a failure to read even the first page is a hard failure.
@@ -862,15 +867,15 @@ Fully implemented in `OrganizationSyncService`.
 ## Testing
 
 ```bash
-php artisan test   # backend — 113 tests, 260 assertions
+php artisan test   # backend — 119 tests, 285 assertions
 npm test           # frontend — 45 tests
 ```
 
-**158 tests in total.** No test touches the network.
+**164 tests in total.** No test touches the network.
 
 | Suite | Coverage |
 |---|---|
-| `RequestSignerTest` | Reference vectors for the signing algorithm, key sorting, RFC 3986 encoding, UTF-16 handling |
+| `RequestSignerTest` | Reference vectors for the signing algorithm, key sorting, RFC 3986 encoding, UTF-16 handling including Cyrillic and surrogate-pair vectors computed with the browser's own function |
 | `YandexUrlParserTest` | 9 accepted URL shapes, rejection of foreign domains and look-alike spoofs |
 | `ReviewsResponseValidatorTest` | Detection of schema changes, captchas, and errors nested in 200 responses |
 | `AuthenticationTest` | Sign-in, brute-force throttling, route protection, session teardown |
@@ -880,6 +885,7 @@ npm test           # frontend — 45 tests
 | `ReviewRepositoryTest` | Visibility rules, stable ordering, per-organization isolation |
 | `ParseRunRepositoryTest` | Pending-run reuse, so a dropped duplicate dispatch cannot orphan a run |
 | `YandexMapsSourceTest` | The fallback policy: the browser is engaged on a contract change and on nothing else |
+| `InternalApiStrategyTest` | The fast path against synthetic responses: pagination stops on a short page, the depth limit is honoured without a doomed request, a block midway keeps what was collected and retires the proxy |
 | `SourceRegistryTest` | Link-to-platform resolution, and that the container wiring produces a usable source |
 | `ProxyPoolTest` | A blocked address leaves rotation and comes back only when cleared |
 | `ReviewQueryTest` | Clamping of page size and page number, and that every sort ends with a unique column |
@@ -910,10 +916,12 @@ address bar, on a page that legitimately asks for a password. Vue Router
 rejects hostile values today, so this was never exploitable, but that is a
 behaviour nobody promised and the guarantee now lives in our own code.
 
-What is deliberately not covered: the strategies' HTTP layer, which would need
-recorded fixtures; the headless browser, which would need a browser in CI; and
-the Vue components themselves, which are exercised end to end rather than in
-isolation. All three are checked by hand against the live deployment.
+What is deliberately not covered: the strategies' HTTP layer against *recorded*
+responses — `InternalApiStrategyTest` drives the fast path through synthetic
+fixtures shaped like the real ones, which pins the control flow but not the
+source's exact wire format; the headless browser, which would need a browser in
+CI; and the Vue components themselves, which are exercised end to end rather
+than in isolation. All three are checked by hand against the live deployment.
 
 ---
 
@@ -946,10 +954,12 @@ isolation. All three are checked by hand against the live deployment.
 5. **Parser health monitoring.** A success-rate metric and an alert on
    `schema_changed` — that error means Yandex changed something, and we should
    learn about it before the user does.
-6. **HTTP-level strategy tests.** The strategies' network layer is not covered by
-   `Http::fake()`; real source responses should be captured as fixtures and
-   replayed. The headless strategy has been exercised by hand against live cards
-   but has no automated coverage, since that would mean running a browser in CI.
+6. **Recorded fixtures for the strategies.** `InternalApiStrategyTest` covers the
+   fast path with synthetic responses; real source responses should be captured
+   as fixtures (tokens redacted) and replayed, so that a drift in the wire
+   format is caught by a test rather than in production. The headless strategy
+   has been exercised by hand against live cards but has no automated coverage,
+   since that would mean running a browser in CI.
 7. **2GIS.** The interfaces are already in place; it needs a second
    `ReviewsSource` implementation.
 8. **Split the worker back out in production.** Sharing a container with the web
