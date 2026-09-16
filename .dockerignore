@@ -35,6 +35,12 @@ storage/framework/views/*
 *.sqlite-journal
 bootstrap/cache/*.php
 
+# Tests. The PHP suite is excluded wholesale; the frontend ones sit beside the
+# code they cover, so they are matched by name. Neither is executed in the
+# image, and a production artefact should not carry them.
+tests
+**/*.test.js
+
 # Tooling and editors
 .phpunit.cache
 .phpunit.result.cache

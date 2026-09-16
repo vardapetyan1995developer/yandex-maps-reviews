@@ -24,4 +24,12 @@ export default defineConfig({
             ignored: ['**/storage/framework/views/**'],
         },
     },
+
+    // Frontend unit tests. Scope is deliberate: the pure modules, where the
+    // logic is worth pinning and no browser is required. Components are covered
+    // through the end-to-end checks described in the README.
+    test: {
+        include: ['resources/js/**/*.test.js'],
+        environment: 'node',
+    },
 });

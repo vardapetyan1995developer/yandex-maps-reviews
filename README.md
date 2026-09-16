@@ -862,10 +862,11 @@ Fully implemented in `OrganizationSyncService`.
 ## Testing
 
 ```bash
-php artisan test
+php artisan test   # backend — 113 tests, 260 assertions
+npm test           # frontend — 45 tests
 ```
 
-**113 tests, 260 assertions.** No test touches the network.
+**158 tests in total.** No test touches the network.
 
 | Suite | Coverage |
 |---|---|
@@ -896,9 +897,23 @@ extracted further into a `SupportedSourceUrl` rule that consults the source
 registry. The listing request hands the repository a typed `ReviewQuery` rather
 than a raw array.
 
+On the frontend, Vitest covers the two modules where the logic is worth pinning
+and no browser is needed:
+
+| Suite | Coverage |
+|---|---|
+| `safeRedirect.test.js` | The post-login redirect target: internal paths pass, `//host`, `/\host`, absolute URLs, script schemes and non-strings fall back to the default route |
+| `useFormatters.test.js` | Russian plural agreement, including the teens — 11 and 111 are what a naive last-digit rule gets wrong — and the counters exactly as the interface renders them |
+
+`safeRedirect` deserves the attention it gets: the value arrives from the
+address bar, on a page that legitimately asks for a password. Vue Router
+rejects hostile values today, so this was never exploitable, but that is a
+behaviour nobody promised and the guarantee now lives in our own code.
+
 What is deliberately not covered: the strategies' HTTP layer, which would need
-recorded fixtures, and the headless browser, which would need a browser in CI.
-Both are exercised by hand against live cards and noted below.
+recorded fixtures; the headless browser, which would need a browser in CI; and
+the Vue components themselves, which are exercised end to end rather than in
+isolation. All three are checked by hand against the live deployment.
 
 ---
 
