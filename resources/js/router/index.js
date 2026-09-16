@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { isWorthRemembering } from './safeRedirect';
 
 const routes = [
     {
@@ -43,7 +44,12 @@ router.beforeEach(async (to) => {
     }
 
     if (to.meta.requiresAuth && !auth.isAuthenticated) {
-        return { name: 'login', query: { redirect: to.fullPath } };
+        // Only record where the user was headed when it is somewhere other than
+        // the default route; otherwise the address bar picks up a `?redirect=/`
+        // that changes nothing
+        return isWorthRemembering(to.fullPath)
+            ? { name: 'login', query: { redirect: to.fullPath } }
+            : { name: 'login' };
     }
 
     if (to.meta.guestOnly && auth.isAuthenticated) {

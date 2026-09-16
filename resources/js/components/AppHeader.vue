@@ -7,7 +7,11 @@ const router = useRouter();
 
 async function handleLogout() {
     await auth.logout();
-    router.push({ name: 'login' });
+
+    // replace, not push: the page just left sits behind a guard, and leaving it
+    // in history means Back lands on a screen that bounces the user straight
+    // out again — which is how `?redirect=/` ends up in the address bar
+    router.replace({ name: 'login' });
 }
 </script>
 

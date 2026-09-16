@@ -3,6 +3,7 @@ import { reactive } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import AlertMessage from '../components/AlertMessage.vue';
+import { safeRedirect } from '../router/safeRedirect';
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -17,8 +18,10 @@ async function handleSubmit() {
     const success = await auth.login(form);
 
     if (success) {
-        // Return to the page the user was bounced from
-        router.push(route.query.redirect || { name: 'settings' });
+        // Back to wherever the user was headed, after checking the value is an
+        // internal path: it comes from the address bar and is attacker-controlled.
+        // replace, not push, so Back does not return to the sign-in form.
+        router.replace(safeRedirect(route.query.redirect));
     }
 }
 </script>
